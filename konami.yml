@@ -1,0 +1,356 @@
+name: Build Konami APK
+on:
+  push:
+    paths: ['.github/workflows/konami.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Generate project files
+        run: |
+          cat > settings.gradle <<'EOF_1'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "Konami"
+          include ':app'
+          EOF_1
+          cat > build.gradle <<'EOF_2'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF_2
+          cat > gradle.properties <<'EOF_3'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF_3
+          mkdir -p app
+          cat > app/build.gradle <<'EOF_4'
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.example.konami'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.example.konami'
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 2
+                  versionName '1.1'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF_4
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_5'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="Konami" android:allowBackup="false">
+                  <activity android:name=".MainActivity" android:exported="true"
+                      android:windowSoftInputMode="stateHidden|adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".KonamiIME"
+                      android:label="Konami"
+                      android:permission="android.permission.BIND_INPUT_METHOD"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.view.InputMethod"/>
+                      </intent-filter>
+                      <meta-data android:name="android.view.im" android:resource="@xml/method"/>
+                  </service>
+              </application>
+          </manifest>
+          EOF_5
+          mkdir -p app/src/main/res/xml
+          cat > app/src/main/res/xml/method.xml <<'EOF_6'
+          <?xml version="1.0" encoding="utf-8"?>
+          <input-method xmlns:android="http://schemas.android.com/apk/res/android" />
+          EOF_6
+          mkdir -p app/src/main/java/com/example/konami
+          cat > app/src/main/java/com/example/konami/MainActivity.java <<'EOF_7'
+          package com.example.konami;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.view.KeyEvent;
+          import android.view.inputmethod.InputMethodManager;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+
+          public class MainActivity extends Activity {
+              private static final int[] SEQ = {
+                  KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_UP,
+                  KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_DOWN,
+                  KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                  KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                  KeyEvent.KEYCODE_B, KeyEvent.KEYCODE_A};
+              private int pos = 0;
+              private final StringBuilder log = new StringBuilder();
+              private TextView result;
+
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  int p = (int) (16 * getResources().getDisplayMetrics().density);
+                  LinearLayout l = new LinearLayout(this);
+                  l.setOrientation(LinearLayout.VERTICAL);
+                  l.setPadding(p, p, p, p);
+
+                  TextView t = new TextView(this);
+                  t.setTextSize(16);
+                  t.setText("Konami: вводит ↑ ↑ ↓ ↓ ← → ← → B A.\n\n"
+                      + "1. Нажмите «Включить клавиатуру» и включите Konami.\n"
+                      + "2. Нажмите на поле ниже и выберите Konami кнопкой «Выбрать клавиатуру».\n"
+                      + "3. Нажмите KONAMI на клавиатуре. Ниже появится лог нажатий.\n"
+                      + "4. Так же работает на любой другой странице.");
+                  l.addView(t);
+
+                  Button b1 = new Button(this);
+                  b1.setText("Включить клавиатуру");
+                  b1.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)));
+                  l.addView(b1);
+
+                  Button b2 = new Button(this);
+                  b2.setText("Выбрать клавиатуру");
+                  b2.setOnClickListener(v -> ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showInputMethodPicker());
+                  l.addView(b2);
+
+                  EditText test = new EditText(this);
+                  test.setHint("Тестовое поле: нажмите сюда");
+                  l.addView(test);
+
+                  result = new TextView(this);
+                  result.setTextSize(15);
+                  result.setText("Лог: пока пусто");
+                  ScrollView sv = new ScrollView(this);
+                  sv.addView(result);
+                  l.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+
+                  test.setOnKeyListener((v, code, e) -> {
+                      if (e.getAction() != KeyEvent.ACTION_DOWN) return false;
+                      if (code == SEQ[pos]) {
+                          pos++;
+                      } else {
+                          pos = (code == SEQ[0]) ? 1 : 0;
+                      }
+                      String name = KeyEvent.keyCodeToString(code).replace("KEYCODE_", "");
+                      log.append(name).append(" (").append(code).append(")\n");
+                      String head = "";
+                      if (pos >= SEQ.length) {
+                          head = "✓ KONAMI принят!\n\n";
+                          pos = 0;
+                      }
+                      result.setText(head + "Лог:\n" + log);
+                      return false;
+                  });
+                  setContentView(l);
+              }
+          }
+          EOF_7
+          cat > app/src/main/java/com/example/konami/KonamiIME.java <<'EOF_8'
+          package com.example.konami;
+
+          import android.graphics.Color;
+          import android.inputmethodservice.InputMethodService;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.SystemClock;
+          import android.view.Gravity;
+          import android.view.KeyCharacterMap;
+          import android.view.KeyEvent;
+          import android.view.View;
+          import android.view.inputmethod.EditorInfo;
+          import android.view.inputmethod.InputConnection;
+          import android.view.inputmethod.InputMethodManager;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public class KonamiIME extends InputMethodService {
+              private static final int[] SEQ = {
+                  KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_UP,
+                  KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_DOWN,
+                  KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                  KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                  KeyEvent.KEYCODE_B, KeyEvent.KEYCODE_A};
+              private static final String[] NAMES = {"↑", "↑", "↓", "↓", "←", "→", "←", "→", "B", "A"};
+              private static final long[] DELAYS = {100, 300, 600, 1000};
+              private int delayIdx = 1;
+              private boolean sendEnter = false;
+              private final Handler h = new Handler(Looper.getMainLooper());
+              private TextView status;
+              private Button speedBtn;
+              private Button enterBtn;
+
+              private int dp(int v) {
+                  return (int) (v * getResources().getDisplayMetrics().density);
+              }
+
+              private Button btn(String t, View.OnClickListener l) {
+                  Button b = new Button(this);
+                  b.setText(t);
+                  b.setTextSize(18);
+                  b.setAllCaps(false);
+                  b.setOnClickListener(l);
+                  return b;
+              }
+
+              private LinearLayout row(Button... bs) {
+                  LinearLayout r = new LinearLayout(this);
+                  r.setOrientation(LinearLayout.HORIZONTAL);
+                  for (Button b : bs) r.addView(b, new LinearLayout.LayoutParams(0, dp(56), 1));
+                  return r;
+              }
+
+              @Override
+              public View onCreateInputView() {
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(Color.parseColor("#1B1B1F"));
+                  root.setPadding(dp(8), dp(8), dp(8), dp(8));
+                  status = new TextView(this);
+                  status.setTextColor(Color.WHITE);
+                  status.setTextSize(16);
+                  status.setGravity(Gravity.CENTER);
+                  status.setText("Нажмите на поле ввода, затем KONAMI");
+                  root.addView(status, new LinearLayout.LayoutParams(-1, -2));
+
+                  root.addView(row(
+                      btn("KONAMI  ↑↑↓↓←→←→BA", v -> konami()),
+                      btn("СТОП", v -> stop())),
+                      new LinearLayout.LayoutParams(-1, -2));
+                  root.addView(row(
+                      btn("↑", v -> key(KeyEvent.KEYCODE_DPAD_UP)),
+                      btn("↓", v -> key(KeyEvent.KEYCODE_DPAD_DOWN)),
+                      btn("←", v -> key(KeyEvent.KEYCODE_DPAD_LEFT)),
+                      btn("→", v -> key(KeyEvent.KEYCODE_DPAD_RIGHT)),
+                      btn("B", v -> key(KeyEvent.KEYCODE_B)),
+                      btn("A", v -> key(KeyEvent.KEYCODE_A))),
+                      new LinearLayout.LayoutParams(-1, -2));
+
+                  speedBtn = btn("", v -> {
+                      delayIdx = (delayIdx + 1) % DELAYS.length;
+                      refreshButtons();
+                  });
+                  speedBtn.setTextSize(14);
+                  enterBtn = btn("", v -> {
+                      sendEnter = !sendEnter;
+                      refreshButtons();
+                  });
+                  enterBtn.setTextSize(14);
+                  root.addView(row(speedBtn, enterBtn), new LinearLayout.LayoutParams(-1, -2));
+
+                  root.addView(row(
+                      btn("Enter", v -> key(KeyEvent.KEYCODE_ENTER)),
+                      btn("Сменить клавиатуру", v ->
+                          ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).showInputMethodPicker())),
+                      new LinearLayout.LayoutParams(-1, -2));
+                  refreshButtons();
+                  return root;
+              }
+
+              private void refreshButtons() {
+                  speedBtn.setText("Пауза: " + DELAYS[delayIdx] + " мс");
+                  enterBtn.setText("Enter в конце: " + (sendEnter ? "да" : "нет"));
+              }
+
+              private void key(int code) {
+                  final InputConnection ic = getCurrentInputConnection();
+                  if (ic == null) return;
+                  long t = SystemClock.uptimeMillis();
+                  final int f = KeyEvent.FLAG_SOFT_KEYBOARD | KeyEvent.FLAG_KEEP_TOUCH_MODE;
+                  final int dev = KeyCharacterMap.VIRTUAL_KEYBOARD;
+                  ic.sendKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0, 0, dev, 0, f));
+                  h.postDelayed(() -> {
+                      InputConnection c = getCurrentInputConnection();
+                      if (c == null) return;
+                      long u = SystemClock.uptimeMillis();
+                      c.sendKeyEvent(new KeyEvent(t, u, KeyEvent.ACTION_UP, code, 0, 0, dev, 0, f));
+                  }, 40);
+              }
+
+              private void stop() {
+                  h.removeCallbacksAndMessages(null);
+                  if (status != null) status.setText("Остановлено");
+              }
+
+              private void konami() {
+                  if (getCurrentInputConnection() == null) {
+                      status.setText("Сначала нажмите на поле ввода");
+                      return;
+                  }
+                  h.removeCallbacksAndMessages(null);
+                  final long d = DELAYS[delayIdx];
+                  status.setText("Отправляю...");
+                  for (int i = 0; i < SEQ.length; i++) {
+                      final int idx = i;
+                      h.postDelayed(() -> {
+                          key(SEQ[idx]);
+                          status.setText("Отправляю: " + NAMES[idx] + "  (" + (idx + 1) + "/" + SEQ.length + ")");
+                      }, d * i);
+                  }
+                  long end = d * SEQ.length;
+                  if (sendEnter) {
+                      h.postDelayed(() -> key(KeyEvent.KEYCODE_ENTER), end);
+                      end += d;
+                  }
+                  h.postDelayed(() -> status.setText("Готово: ↑↑↓↓←→←→BA"), end);
+              }
+
+              @Override
+              public void onStartInputView(EditorInfo info, boolean restarting) {
+                  super.onStartInputView(info, restarting);
+                  if (status != null) status.setText("Готово. Нажмите KONAMI");
+              }
+
+              @Override
+              public void onFinishInput() {
+                  super.onFinishInput();
+                  h.removeCallbacksAndMessages(null);
+              }
+
+              @Override
+              public void onDestroy() {
+                  h.removeCallbacksAndMessages(null);
+                  super.onDestroy();
+              }
+          }
+          EOF_8
+      - name: Build
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Konami-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: konami-${{ github.run_number }}
+          name: Konami build ${{ github.run_number }}
+          files: app/build/outputs/apk/debug/app-debug.apk
